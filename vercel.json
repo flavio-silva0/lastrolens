@@ -1,0 +1,8 @@
+{
+  "builds": [
+    { "src": "api/insights.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "api/insights.py" }
+  ]
+}
