@@ -8,7 +8,10 @@ from hubspot_client import (
     search_cooby_comms, extract_message_text, create_note,
     search_contact_calls, clean_call_summary_html, strip_html
 )
-from insights_agent import generate_insights_from_transcript, generate_insights_combined
+from insights_agent import (
+    generate_insights_from_transcript,  # usamos para Cooby e também para Calls
+    generate_insights_combined          # usamos para o insight Geral
+)
 
 API_TOKEN = os.getenv("AGENT_API_TOKEN")
 app = FastAPI(title="Lastro Cooby Insights Agent (Vercel)")
@@ -16,16 +19,16 @@ app = FastAPI(title="Lastro Cooby Insights Agent (Vercel)")
 class InsightsRequest(BaseModel):
     contactId: str
     createNote: bool = True
-    sinceEpochMs: Optional[int] = None  # filtra mensagens recentes (ms)
+    sinceEpochMs: Optional[int] = None  # filtra itens antigos (ms desde epoch)
 
 def build_cooby_transcript(results, since_ms: Optional[int] = None) -> str:
     msgs = []
     for r in results:
-        props = r.get("properties") or {}
-        ts = props.get("hs_timestamp")
+        p = r.get("properties") or {}
+        ts = p.get("hs_timestamp")
         if since_ms and ts and int(ts) < since_ms:
             continue
-        body = props.get("hs_communication_body", "")
+        body = p.get("hs_communication_body", "")
         msg = extract_message_text(body)
         if msg:
             msgs.append(f"[{ts}] {msg}")
@@ -70,6 +73,7 @@ def render_note_html(title: str, insights: dict) -> str:
 
 @app.post("/api/insights")
 def insights(req: InsightsRequest, authorization: Optional[str] = Header(None)):
+    # auth
     if API_TOKEN:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -78,35 +82,49 @@ def insights(req: InsightsRequest, authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=403, detail="Invalid token")
 
     try:
-        # 1) WhatsApp (Cooby)
+        # ===== 1) Cooby =====
         comms = search_cooby_comms(req.contactId)
         cooby_txt = build_cooby_transcript(comms, req.sinceEpochMs)
-
         if not cooby_txt.strip():
             return {"ok": False, "reason": "NO_MESSAGES", "message": "Sem mensagens Cooby com Message text."}
 
         insights_cooby = generate_insights_from_transcript(cooby_txt)
+        note_id_cooby = create_note(req.contactId, render_note_html("🤖 Insights (Cooby/WhatsApp)", insights_cooby)) if req.createNote else None
 
-        note_id_cooby = None
-        if req.createNote:
-            note_id_cooby = create_note(req.contactId, render_note_html("🤖 Insights (Cooby/WhatsApp)", insights_cooby))
-
-        # 2) Ligações (Calls) → resumo/observações
+        # ===== 2) Calls (resumo/observações) =====
         calls = search_contact_calls(req.contactId)
         calls_txt = build_calls_summary_block(calls, req.sinceEpochMs)
 
-        note_id_general = None
+        note_id_calls = None
+        insights_calls = None
         if calls_txt.strip():
-            insights_combined = generate_insights_combined(cooby_txt, calls_txt)
+            # usamos a MESMA função de transcript para gerar insight só das ligações
+            insights_calls = generate_insights_from_transcript(calls_txt)
             if req.createNote:
-                note_id_general = create_note(req.contactId, render_note_html("🤖 Insights (Geral: WhatsApp + Ligações)", insights_combined))
+                note_id_calls = create_note(req.contactId, render_note_html("📞 Insights (Ligações)", insights_calls))
+
+        # ===== 3) Geral (Cooby + Calls) =====
+        note_id_general = None
+        insights_general = None
+        if calls_txt.strip():
+            insights_general = generate_insights_combined(cooby_txt, calls_txt)
+            if req.createNote:
+                note_id_general = create_note(req.contactId, render_note_html("🧩 Insights (Geral: WhatsApp + Ligações)", insights_general))
 
         return {
             "ok": True,
-            "notes": {"cooby": note_id_cooby, "geral": note_id_general},
-            "scores_cooby": {"pre": insights_cooby.get("lead_scoring_pre"), "pos": insights_cooby.get("lead_scoring_pos")},
-            "label_cooby": insights_cooby.get("label_interacao"),
-            "has_calls": bool(calls_txt.strip())
+            "notes": {
+                "cooby": note_id_cooby,
+                "calls": note_id_calls,
+                "geral": note_id_general
+            },
+            "has_calls": bool(calls_txt.strip()),
+            "scores": {
+                "cooby": insights_cooby.get("lead_scoring_pre"), 
+                "cooby_pos": insights_cooby.get("lead_scoring_pos"),
+                "calls": (insights_calls or {}).get("lead_scoring_pre") if insights_calls else None,
+                "calls_pos": (insights_calls or {}).get("lead_scoring_pos") if insights_calls else None,
+            }
         }
     except Exception as e:
         return {"ok": False, "reason": "ERROR", "error": str(e)}
