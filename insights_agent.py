@@ -35,3 +35,27 @@ def generate_insights_from_transcript(text: str) -> dict:
         response_format={"type": "json_object"}
     )
     return json.loads(resp.choices[0].message.content)
+
+def build_combined_prompt(cooby_text: str, call_text: str, schema_json: str) -> str:
+    return (
+        "Gere insights considerando as duas fontes abaixo. "
+        "Se houver divergências, destaque-as; se forem complementares, consolide.\n\n"
+        "=== WhatsApp (Cooby) ===\n"
+        f"{cooby_text}\n\n"
+        "=== Chamada (Resumo/Observações) ===\n"
+        f"{call_text}\n\n"
+        "Retorne SOMENTE JSON seguindo este formato:\n"
+        f"{schema_json}"
+    )
+
+def generate_insights_combined(cooby_text: str, call_text: str) -> dict:
+    prompt = build_combined_prompt(cooby_text, call_text, json.dumps(SCHEMA_EXEMPLO, ensure_ascii=False))
+    resp = client.chat.completions.create(
+        model="gpt-5-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+            {"role": "user", "content": prompt}
+        ],
+        response_format={"type": "json_object"}
+    )
+    return json.loads(resp.choices[0].message.content)
