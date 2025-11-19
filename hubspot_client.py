@@ -23,6 +23,24 @@ def search_cooby_comms(contact_id: str, limit: int = 100):
     r.raise_for_status()
     return r.json().get("results", [])
 
+def search_cooby_comms_by_deal(deal_id: str, limit: int = 100):
+    url = f"{BASE}/crm/v3/objects/communications/search"
+    body = {
+        "filterGroups": [{
+            "filters": [
+                {"propertyName": "associations.deal", "operator": "EQ", "value": deal_id},
+                {"propertyName": "hs_communication_body", "operator": "CONTAINS_TOKEN", "value": "Cooby.co"}
+            ]
+        }],
+        "properties": ["hs_communication_body", "hs_timestamp", "hs_communication_channel_type", "hs_direction"],
+        "limit": limit,
+        "sorts": [{"propertyName": "hs_timestamp", "direction": "DESCENDING"}]
+    }
+    r = requests.post(url, headers=HDRS, json=body, timeout=30)
+    r.raise_for_status()
+    return r.json().get("results", [])
+
+
 def extract_message_text(body: str):
     if not body:
         return None
@@ -51,6 +69,43 @@ def create_note(contact_id: str, html: str) -> str:
         raise RuntimeError(f"[AssociateNote] {assoc.status_code} {assoc.text}")
     return note_id
 
+def create_note_for_deal(deal_id: str, html: str) -> str:
+    """
+    Cria nota e associa ao negócio (deal).
+    """
+    url = f"{BASE}/crm/v3/objects/notes"
+    now_ms = int(time.time() * 1000)
+    payload = {"properties": {"hs_note_body": html, "hs_timestamp": now_ms}}
+    r = requests.post(url, headers=HDRS, json=payload, timeout=30)
+    if r.status_code >= 300:
+        raise RuntimeError(f"[CreateNoteDeal] {r.status_code} {r.text}")
+
+    note_id = r.json().get("id")
+
+    # Associa via v3 (rota padrão note_to_deal)
+    assoc_url = f"{BASE}/crm/v3/objects/notes/{note_id}/associations/deals/{deal_id}/note_to_deal"
+    assoc = requests.put(assoc_url, headers=HDRS, timeout=30)
+
+    if assoc.status_code == 404:
+        # Fallback v4 – o associationTypeId pode variar entre portais,
+        # então se der erro, vale ajustar aqui conforme o schema do seu HubSpot.
+        v4_url = f"{BASE}/crm/v4/objects/notes/{note_id}/associations/deals/{deal_id}"
+        body = {
+            "inputs": [{
+                "types": [{
+                    "associationCategory": "HUBSPOT_DEFINED",
+                    "associationTypeId": 214  # <<< confira este ID no seu portal
+                }]
+            }]
+        }
+        assoc = requests.post(v4_url, headers=HDRS, json=body, timeout=30)
+
+    if assoc.status_code >= 300:
+        raise RuntimeError(f"[AssociateNoteDeal] {assoc.status_code} {assoc.text}")
+
+    return note_id
+
+
 def search_contact_calls(contact_id: str, limit: int = 50):
     """
     Busca chamadas (calls) associadas ao contato.
@@ -78,6 +133,35 @@ def search_contact_calls(contact_id: str, limit: int = 50):
     r = requests.post(url, headers=HDRS, json=body, timeout=30)
     r.raise_for_status()
     return r.json().get("results", [])
+
+def search_deal_calls(deal_id: str, limit: int = 50):
+    """
+    Busca chamadas (calls) associadas ao negócio (deal).
+    Mesmo padrão de propriedades das chamadas de contato.
+    """
+    url = f"{BASE}/crm/v3/objects/calls/search"
+    body = {
+        "filterGroups": [{
+            "filters": [
+                {"propertyName": "associations.deal", "operator": "EQ", "value": str(deal_id)}
+            ]
+        }],
+        "properties": [
+            "hs_call_title",
+            "hs_call_outcome",
+            "hs_call_duration",
+            "hs_call_body",
+            "hs_call_summary",
+            "call_summary",
+            "hs_timestamp"
+        ],
+        "limit": limit,
+        "sorts": [{"propertyName": "hs_timestamp", "direction": "DESCENDING"}]
+    }
+    r = requests.post(url, headers=HDRS, json=body, timeout=30)
+    r.raise_for_status()
+    return r.json().get("results", [])
+
 
 # ——— limpeza do HTML do summary para texto simples com bullets
 _RE_BR   = re.compile(r"<br\s*/?>", re.I)

@@ -6,8 +6,10 @@ from pydantic import BaseModel
 
 from hubspot_client import (
     search_cooby_comms, extract_message_text, create_note,
-    search_contact_calls, clean_call_summary_html, strip_html
+    search_contact_calls, clean_call_summary_html, strip_html,
+    search_cooby_comms_by_deal, search_deal_calls, create_note_for_deal,
 )
+
 from insights_agent import (
     generate_insights_from_transcript,  # usamos para Cooby e também para Calls
     generate_insights_combined          # usamos para o insight Geral
@@ -20,6 +22,12 @@ class InsightsRequest(BaseModel):
     contactId: str
     createNote: bool = True
     sinceEpochMs: Optional[int] = None  # filtra itens antigos (ms desde epoch)
+    
+class DealInsightsRequest(BaseModel):
+    dealId: str
+    createNote: bool = True
+    sinceEpochMs: Optional[int] = None
+
 
 def build_cooby_transcript(results, since_ms: Optional[int] = None) -> str:
     msgs = []
@@ -126,5 +134,79 @@ def insights(req: InsightsRequest, authorization: Optional[str] = Header(None)):
                 "calls_pos": (insights_calls or {}).get("lead_scoring_pos") if insights_calls else None,
             }
         }
+    except Exception as e:
+        return {"ok": False, "reason": "ERROR", "error": str(e)}
+
+@app.post("/api/insights/deal")
+def insights_deal(req: DealInsightsRequest, authorization: Optional[str] = Header(None)):
+    # auth (mesma lógica do endpoint de contato)
+    if API_TOKEN:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+        token = authorization.split(" ", 1)[1].strip()
+        if token != API_TOKEN:
+            raise HTTPException(status_code=403, detail="Invalid token")
+
+    try:
+        # ===== 1) Cooby ligado ao deal =====
+        comms = search_cooby_comms_by_deal(req.dealId)
+        cooby_txt = build_cooby_transcript(comms, req.sinceEpochMs)
+        if not cooby_txt.strip():
+            return {
+                "ok": False,
+                "reason": "NO_MESSAGES",
+                "message": "Sem mensagens Cooby com Message text para este deal."
+            }
+
+        insights_cooby = generate_insights_from_transcript(cooby_txt)
+        note_id_cooby = (
+            create_note_for_deal(
+                req.dealId,
+                render_note_html("🤖 Insights (Cooby/WhatsApp) — Deal", insights_cooby)
+            )
+            if req.createNote else None
+        )
+
+        # ===== 2) Calls ligadas ao deal =====
+        calls = search_deal_calls(req.dealId)
+        calls_txt = build_calls_summary_block(calls, req.sinceEpochMs)
+
+        note_id_calls = None
+        insights_calls = None
+        if calls_txt.strip():
+            insights_calls = generate_insights_from_transcript(calls_txt)
+            if req.createNote:
+                note_id_calls = create_note_for_deal(
+                    req.dealId,
+                    render_note_html("📞 Insights (Ligações) — Deal", insights_calls)
+                )
+
+        # ===== 3) Geral (Cooby + Calls) para o deal =====
+        note_id_general = None
+        insights_general = None
+        if calls_txt.strip():
+            insights_general = generate_insights_combined(cooby_txt, calls_txt)
+            if req.createNote:
+                note_id_general = create_note_for_deal(
+                    req.dealId,
+                    render_note_html("🧩 Insights (Geral: WhatsApp + Ligações) — Deal", insights_general)
+                )
+
+        return {
+            "ok": True,
+            "notes": {
+                "cooby": note_id_cooby,
+                "calls": note_id_calls,
+                "geral": note_id_general
+            },
+            "has_calls": bool(calls_txt.strip()),
+            "scores": {
+                "cooby":  insights_cooby.get("lead_scoring_pre"),
+                "cooby_pos": insights_cooby.get("lead_scoring_pos"),
+                "calls": (insights_calls or {}).get("lead_scoring_pre") if insights_calls else None,
+                "calls_pos": (insights_calls or {}).get("lead_scoring_pos") if insights_calls else None,
+            }
+        }
+
     except Exception as e:
         return {"ok": False, "reason": "ERROR", "error": str(e)}
