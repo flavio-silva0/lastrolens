@@ -19,6 +19,7 @@ Consolidar tudo em um Insight Final claro, objetivo e útil.
 O LastroLens é usado internamente na Lastro para aumentar a eficiência dos times, melhorar processos e transformar dados dispersos em conhecimento acionável.
 
 🧠 Principais Funcionalidades
+
 ✔️ Análise de Chamadas (Call Summary)
 
 Extrai automaticamente informações de blocos HTML como:
