@@ -59,3 +59,35 @@ def generate_insights_combined(cooby_text: str, call_text: str) -> dict:
         response_format={"type": "json_object"}
     )
     return json.loads(resp.choices[0].message.content)
+
+def generate_insights_triple(cooby_text: str, call_text: str, elephan_text: str) -> dict:
+    """
+    Gera um insight geral combinando até três fontes.
+    Qualquer fonte vazia é simplesmente ignorada.
+    """
+    prompt = (
+        "Gere insights combinando até três fontes abaixo. "
+        "Use somente as que tiverem conteúdo relevante. "
+        "Se alguma estiver vazia ou ausente, ignore sem falhar.\n\n"
+        "=== WhatsApp (Cooby) ===\n"
+        f"{cooby_text or '(sem dados)'}\n\n"
+        "=== Ligações ===\n"
+        f"{call_text or '(sem dados)'}\n\n"
+        "=== Reunião Elephan ===\n"
+        f"{elephan_text or '(sem dados)'}\n\n"
+        "Consolide e cruze as informações, gerando um insight único. "
+        "Destaque divergências, objeções importantes e próximos passos.\n\n"
+        "Retorne SOMENTE JSON seguindo este formato:\n"
+        + json.dumps(SCHEMA_EXEMPLO, ensure_ascii=False)
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-5-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return json.loads(resp.choices[0].message.content)
+

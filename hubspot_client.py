@@ -5,6 +5,7 @@ BASE = "https://api.hubapi.com"
 HDRS = {"Authorization": f"Bearer {HUBSPOT_TOKEN}", "Content-Type": "application/json"}
 
 COOBY_MSG_RE = re.compile(r"Message text:\s*(.+?)(?:\n|$)", re.IGNORECASE | re.DOTALL)
+ELEPHAN_RE = re.compile(r"por\s+Elephan", re.IGNORECASE)
 
 def search_cooby_comms(contact_id: str, limit: int = 100):
     url = f"{BASE}/crm/v3/objects/communications/search"
@@ -22,6 +23,24 @@ def search_cooby_comms(contact_id: str, limit: int = 100):
     r = requests.post(url, headers=HDRS, json=body, timeout=30)
     r.raise_for_status()
     return r.json().get("results", [])
+
+def build_elephan_block(note_results, since_ms: int | None = None) -> str:
+    """
+    Junta todas as notas que parecem ser resumos da Elephan
+    (contêm 'por Elephan') em um texto único.
+    """
+    blocks = []
+    for r in note_results:
+        p = r.get("properties") or {}
+        ts = p.get("hs_timestamp")
+        if since_ms and ts and int(ts) < since_ms:
+            continue
+        body = p.get("hs_note_body") or ""
+        txt = strip_html(body)
+        if txt and ELEPHAN_RE.search(txt):
+            blocks.append(f"[{ts}]\n{txt}")
+    blocks.sort()
+    return "\n\n".join(blocks)
 
 def extract_message_text(body: str):
     if not body:
@@ -78,6 +97,27 @@ def search_contact_calls(contact_id: str, limit: int = 50):
     r = requests.post(url, headers=HDRS, json=body, timeout=30)
     r.raise_for_status()
     return r.json().get("results", [])
+
+def search_contact_notes(contact_id: str, limit: int = 50):
+    """
+    Busca notas (engagements NOTE) associadas ao contato.
+    Usaremos para encontrar os resumos de reunião da Elephan.
+    """
+    url = f"{BASE}/crm/v3/objects/notes/search"
+    body = {
+        "filterGroups": [{
+            "filters": [
+                {"propertyName": "associations.contact", "operator": "EQ", "value": str(contact_id)}
+            ]
+        }],
+        "properties": ["hs_note_body", "hs_timestamp"],
+        "limit": limit,
+        "sorts": [{"propertyName": "hs_timestamp", "direction": "DESCENDING"}]
+    }
+    r = requests.post(url, headers=HDRS, json=body, timeout=30)
+    r.raise_for_status()
+    return r.json().get("results", [])
+
 
 # ——— limpeza do HTML do summary para texto simples com bullets
 _RE_BR   = re.compile(r"<br\s*/?>", re.I)
